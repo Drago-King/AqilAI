@@ -1,12 +1,19 @@
 # AQIL AI
 
-AQIL AI is a secure Android Accessibility-based personal agent starter. It provides:
+AQIL AI is a polished Android Accessibility-based phone agent starter inspired by modern assistant apps. It includes a dark classic UI, an AQIL logo, voice and keyboard command consoles, a floating accessibility circle, and an optional OpenAI API-key field for smarter reasoning.
 
-- A floating AQIL accessibility circle.
-- Tap-to-expand microphone and keyboard command controls.
-- Long-press-to-open the main app.
-- Accessibility actions for back, home, recents, and scroll gestures.
-- Voice/text commands that open YouTube, music searches, food/order searches, and gallery image browsing.
+## What it can do now
+
+- Show a premium dark setup screen with AQIL branding.
+- Save an OpenAI API key locally in private app storage.
+- Accept typed commands in the app.
+- Accept voice commands in the app.
+- Start a floating AQIL circle after overlay permission is granted.
+- Expand the floating circle into keyboard + microphone controls.
+- Run Accessibility actions for back, home, recents, and scroll gestures.
+- Open YouTube/music searches, food/order searches, web searches, and gallery image browsing.
+- Use local fallback command handling when no API key is configured.
+- Use OpenAI Responses API when a key is configured.
 
 ## Build on Android with GitHub Actions
 
@@ -23,6 +30,10 @@ After installing, open AQIL AI and enable:
 - Display over other apps: shows the floating circle.
 - Microphone: voice commands.
 - Photos/images: gallery document lookup starter.
+
+## Using the AI key
+
+Open AQIL AI, paste your OpenAI API key in **Add AI brain**, and tap **Save API Key**. The key is stored only in this app's private Android preferences.
 
 ## Safety note
 
