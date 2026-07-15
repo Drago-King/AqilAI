@@ -1,19 +1,48 @@
 # AQIL AI
 
-AQIL AI is a polished Android Accessibility-based phone agent starter inspired by modern assistant apps. It includes a dark classic UI, an AQIL logo, voice and keyboard command consoles, a floating accessibility circle, and an optional OpenAI API-key field for smarter reasoning.
+AQIL AI is a polished Android Accessibility-based assistant starter with a premium dark UI, navigation drawer-style sections, configurable AI providers, voice settings, a draggable floating assistant, and safe automation scaffolding.
 
-## What it can do now
+## Sections
 
-- Show a premium dark setup screen with AQIL branding.
-- Save an OpenAI API key locally in private app storage.
-- Accept typed commands in the app.
-- Accept voice commands in the app.
-- Start a floating AQIL circle after overlay permission is granted.
-- Expand the floating circle into keyboard + microphone controls.
-- Run Accessibility actions for back, home, recents, and scroll gestures.
-- Open YouTube/music searches, food/order searches, web searches, and gallery image browsing.
-- Use local fallback command handling when no API key is configured.
-- Use OpenAI Responses API when a key is configured.
+- Home
+- Chat
+- AI Agent
+- Floating Assistant
+- History
+- Settings
+- AI Providers
+- Voice
+- Appearance
+- Permissions
+- Accessibility
+- Automation
+- Advanced
+- About
+
+## AI Providers
+
+AQIL does not hardcode OpenAI. Configure any OpenAI-compatible endpoint:
+
+- OpenAI Compatible
+- OpenRouter
+- Groq
+- Google Gemini-compatible gateways
+- Local Ollama OpenAI-compatible endpoints
+- Any custom OpenAI-compatible Base URL
+
+Fields include Provider, Base URL, AI Model, API Key, Save Provider, Test Connection, and status output.
+
+## Voice
+
+The Voice page stores ElevenLabs configuration fields for API key, Voice ID, speed, stability, style, and TTS enable/disable.
+
+## Floating Assistant
+
+The AQIL floating bubble starts after overlay permission, restarts when returning to the app, survives service restarts with `START_STICKY`, can be dragged anywhere, remembers its position, expands into keyboard + mic controls, and long-presses back into the main app.
+
+## Accessibility Automation
+
+With user-granted Accessibility permission, AQIL can run basic actions including back, home, recents, quick settings, notifications, scrolling, focused text entry, app opening, camera/settings display, media/gallery, and web searches. Sensitive automations such as sending messages, orders, purchases, or sharing files should always request explicit final confirmation.
 
 ## Build on Android with GitHub Actions
 
@@ -24,17 +53,23 @@ AQIL AI is a polished Android Accessibility-based phone agent starter inspired b
 
 ## Required phone permissions
 
-After installing, open AQIL AI and enable:
-
 - Accessibility: lets AQIL read screen content and perform gestures.
 - Display over other apps: shows the floating circle.
 - Microphone: voice commands.
 - Photos/images: gallery document lookup starter.
 
-## Using the AI key
-
-Open AQIL AI, paste your OpenAI API key in **Add AI brain**, and tap **Save API Key**. The key is stored only in this app's private Android preferences.
-
 ## Safety note
 
 Android does not allow any app to silently control the entire phone without explicit user permissions. AQIL AI uses official Android Accessibility APIs and always requires you to grant permissions manually.
+
+## True Agent Upgrade
+
+AQIL now has a tool registry so the model can decide whether to call Accessibility actions, Gallery Search, WhatsApp preparation, Camera, File Manager, or System actions. Provider responses may return tool JSON, and dangerous workflows require confirmation before AQIL continues.
+
+## Gallery AI
+
+Gallery search scans recent MediaStore images and uses Google ML Kit Text Recognition plus Image Labeling for OCR/object-label search. This enables queries such as “community certificate” to match filenames, recognized text, and visual labels before asking for confirmation to share.
+
+## Voice Output
+
+The Voice page can call the ElevenLabs text-to-speech streaming endpoint, cache the returned speech audio, play it with Android `MediaPlayer`, and stop playback when interrupted.
