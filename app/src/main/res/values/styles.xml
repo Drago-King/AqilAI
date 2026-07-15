@@ -1,0 +1,10 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">serif</item>
+        <item name="android:windowBackground">@drawable/app_background</item>
+        <item name="android:colorAccent">@color/aqil_gold</item>
+        <item name="android:navigationBarColor">@color/aqil_bg</item>
+        <item name="android:statusBarColor">@color/aqil_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
