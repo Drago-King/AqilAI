@@ -11,7 +11,7 @@ public static JSONArray schema() throws Exception {
 JSONArray tools = new JSONArray();
 add(tools, "accessibility_action", "Run Android accessibility/system actions like back, home, recent, scroll, open app, type, camera, settings, flashlight.");
 add(tools, "gallery_search", "Search photos by filename, OCR text, and image labels. Returns candidate image URIs; requires user confirmation before sharing.");
-add(tools, "whatsapp_prepare", "Open WhatsApp, search for a contact by name, open their chat, and (optionally) attach an image found via gallery_search. Input should be the contact name; pass image_uri separately if an image was already found. Never sends without the user's own final tap.");
+add(tools, "whatsapp_prepare", "Open WhatsApp, search for a contact by name, open their chat, and (optionally) type a message and/or attach an image found via gallery_search. Input should be the contact name; pass message separately for text to type, and/or image_uri if an image was already found via gallery_search. Never taps Send -- only types/attaches and waits for the user's own final tap.");
 add(tools, "camera", "Open the camera app.");
 add(tools, "file_manager", "Open Android file picker or file manager intent.");
 add(tools, "system_action", "Open settings, quick settings, notifications, brightness, sound, Wi-Fi controls.");
@@ -19,15 +19,16 @@ add(tools, "screen_agent", "For any multi-step on-screen task not covered by the
 return tools;
 }
 private static void add(JSONArray tools, String name, String description) throws Exception { tools.put(new JSONObject().put("name", name).put("description", description)); }
-public static void execute(Context c, String tool, String input, Callback cb) { execute(c, tool, input, null, cb); }
+public static void execute(Context c, String tool, String input, Callback cb) { execute(c, tool, input, null, null, cb); }
+public static void execute(Context c, String tool, String input, String imageUri, Callback cb) { execute(c, tool, input, imageUri, null, cb); }
 
-public static void execute(Context c, String tool, String input, String imageUri, Callback cb) {
+public static void execute(Context c, String tool, String input, String imageUri, String message, Callback cb) {
 if (tool == null) { cb.onResult("No tool selected."); return; }
 switch (tool) {
 case "gallery_search": GallerySearchEngine.search(c, input, cb::onResult); break;
 case "whatsapp_prepare": {
     Uri uri = imageUri != null && !imageUri.isEmpty() ? Uri.parse(imageUri) : null;
-    boolean started = AqilAccessibilityService.startWhatsApp(input, uri);
+    boolean started = AqilAccessibilityService.startWhatsApp(input, uri, message);
     cb.onResult(started ? "Searching WhatsApp for \"" + input + "\"..." : "Accessibility service isn't connected -- enable it in Permissions first.");
     break;
 }

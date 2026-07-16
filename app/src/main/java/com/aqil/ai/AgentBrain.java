@@ -15,7 +15,7 @@ public class AgentBrain {
 public interface Callback { void onAnswer(String answer); }
 public static final String PREFS = "aqil_agent";
 public static final String[] PROVIDERS = {"OpenAI Compatible", "OpenRouter", "Groq", "Google Gemini", "Local (Ollama)"};
-private static final String SYSTEM = "You are AQIL, a safe Android tool-calling assistant. Reason first. If a phone tool is needed, return ONLY JSON: {\"tool\":\"tool_name\",\"input\":\"short command/query\",\"confirm\":true/false,\"image_uri\":\"optional, only for whatsapp_prepare after a gallery_search result\"}. To send a found photo on WhatsApp: first call gallery_search, read the URI out of its result, then call whatsapp_prepare with input=the contact's name and image_uri=that URI. For anything else that requires navigating an app's UI and isn't covered by a specific tool -- opening any app and tapping through menus, filling a form, liking a post, changing a setting -- use screen_agent with input=the goal in plain language; it reads the actual screen itself and iterates. Use confirm=true before sending messages, purchases, orders, or sharing files -- whatsapp_prepare and screen_agent never auto-send anything irreversible without it being an explicit part of the stated goal. If no tool is needed, answer normally. Available tools are provided in the user message.";
+private static final String SYSTEM = "You are AQIL, a safe Android tool-calling assistant. Reason first. If a phone tool is needed, return ONLY JSON: {\"tool\":\"tool_name\",\"input\":\"short command/query\",\"confirm\":true/false,\"image_uri\":\"optional, only for whatsapp_prepare after a gallery_search result\",\"message\":\"optional, only for whatsapp_prepare -- text to type into the chat (e.g. a joke, a note) once it's open\"}. If the user asks to send a message/joke/text on WhatsApp, write the actual message content yourself and put it in the message field -- whatsapp_prepare will type it in but never taps Send itself. accessibility_action/system_action only do blunt one-shot things (scroll, back, open an app to its default screen, open a generic search) -- they cannot find or tap a specific item. Whenever the goal needs finding and tapping something specific on screen (a particular video, a particular contact, a particular setting toggle, a particular button in a form), use screen_agent instead with input=the full goal in plain language; it reads the actual screen and iterates step by step. To send a found photo on WhatsApp: first call gallery_search, read the URI out of its result, then call whatsapp_prepare with input=the contact's name and image_uri=that URI. Use confirm=true before sending messages, purchases, orders, or sharing files -- whatsapp_prepare and screen_agent never auto-send anything irreversible, they only prepare it for the user's own final tap. If no tool is needed, answer normally. Available tools are provided in the user message.";
 
 public static SharedPreferences prefs(Context c) { return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE); }  
 public static void saveProvider(Context c, String provider, String baseUrl, String model, String key) {  
@@ -31,8 +31,33 @@ public static void addHistory(Context c, String line) {
     prefs(c).edit().putString("history", (line + "\n" + old).trim()).apply();  
 }  
 
+private static volatile JSONObject pendingTool = null;
+private static volatile String pendingPrompt = null;
+
 public static void ask(Context context, String prompt, Callback callback) {  
     addHistory(context, "You: " + prompt);  
+
+    // Check first: is this a yes/no reply to a pending confirmation, rather than a new request?
+    if (pendingTool != null) {
+        String lower = prompt.trim().toLowerCase(java.util.Locale.US);
+        if (isAffirmative(lower)) {
+            JSONObject tool = pendingTool; pendingTool = null; pendingPrompt = null;
+            ToolRegistry.execute(context, tool.optString("tool"), tool.optString("input", prompt),
+                    tool.optString("image_uri", null), tool.optString("message", null),
+                    result -> { addHistory(context, "AQIL: " + result); callback.onAnswer(result); });
+            return;
+        }
+        if (isNegative(lower)) {
+            pendingTool = null; pendingPrompt = null;
+            String msg = "Cancelled -- not going ahead with that.";
+            addHistory(context, "AQIL: " + msg);
+            callback.onAnswer(msg);
+            return;
+        }
+        // anything else: treat as a fresh request and drop the stale pending confirmation
+        pendingTool = null; pendingPrompt = null;
+    }
+
     new Thread(() -> {  
         String key = get(context, "api_key", "");  
         String base = get(context, "base_url", "https://openrouter.ai/api/v1");  
@@ -47,14 +72,37 @@ public static void ask(Context context, String prompt, Callback callback) {
         try {  
             JSONObject maybeTool = extractJson(answer);  
             if (maybeTool != null && maybeTool.has("tool")) {  
-                if (maybeTool.optBoolean("confirm", false)) finalAnswer = "I found the required action, but need your confirmation before I continue: " + maybeTool.toString();  
-                else { ToolRegistry.execute(context, maybeTool.optString("tool"), maybeTool.optString("input", prompt), maybeTool.optString("image_uri", null), result -> callback.onAnswer("Tool result: " + result)); return; }  
+                if (maybeTool.optBoolean("confirm", false)) {
+                    pendingTool = maybeTool;
+                    pendingPrompt = prompt;
+                    finalAnswer = "About to " + describeTool(maybeTool) + ". Reply \"yes\" to go ahead, or \"no\" to cancel.";
+                } else { ToolRegistry.execute(context, maybeTool.optString("tool"), maybeTool.optString("input", prompt), maybeTool.optString("image_uri", null), maybeTool.optString("message", null), result -> { addHistory(context, "AQIL: " + result); callback.onAnswer(result); }); return; }  
             }  
         } catch (Exception ignored) { }  
         addHistory(context, "AQIL: " + finalAnswer);  
         callback.onAnswer(finalAnswer);  
     }).start();  
 }  
+
+private static boolean isAffirmative(String s) {
+    for (String w : new String[]{"yes","y","yeah","yep","confirm","do it","go ahead","ok","okay","sure","proceed","send it"})
+        if (s.equals(w) || s.startsWith(w + " ")) return true;
+    return false;
+}
+private static boolean isNegative(String s) {
+    for (String w : new String[]{"no","n","cancel","stop","don't","dont","nvm","never mind"})
+        if (s.equals(w) || s.startsWith(w + " ")) return true;
+    return false;
+}
+private static String describeTool(JSONObject tool) {
+    String name = tool.optString("tool", "");
+    String input = tool.optString("input", "");
+    switch (name) {
+        case "whatsapp_prepare": return "open WhatsApp and prepare a message for \"" + input + "\"";
+        case "screen_agent": return "run this on-screen task: " + input;
+        default: return "run " + name + " with \"" + input + "\"";
+    }
+}
 
 public static void test(Context context, Callback callback) { ask(context, "Reply with: Connected", callback); }  
 

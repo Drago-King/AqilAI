@@ -26,13 +26,13 @@ public class WhatsAppAutomation {
     private static final long TIMEOUT_MS = 8000;
     private static volatile boolean cancelRequested = false;
 
-    /** Opens WhatsApp, searches for contactHint, opens their chat, and (if imageUri is set)
-     *  attaches the image via the system share sheet targeted at WhatsApp. Stops before Send.
-     *  A cancel bar is shown for the whole flow -- tapping it aborts at the next check point. */
-    public static void openChatAndPrepare(AccessibilityService svc, String contactHint, Uri imageUri, Callback cb) {
+    /** Opens WhatsApp, searches for contactHint, opens their chat, and then either types
+     *  message text into the chat's compose field, attaches imageUri via the share sheet,
+     *  or (if neither given) just leaves the chat open. Never taps Send. */
+    public static void openChatAndPrepare(AccessibilityService svc, String contactHint, Uri imageUri, String message, Callback cb) {
         if (svc == null) { cb.onStatus("Accessibility service not connected."); return; }
         Intent launch = svc.getPackageManager().getLaunchIntentForPackage("com.whatsapp");
-        if (launch == null) { cb.onStatus("WhatsApp isn't installed."); return; }
+        if (launch == null) { cb.onStatus("Couldn't launch WhatsApp -- check it's installed and try again."); return; }
 
         cancelRequested = false;
         TaskCancelBar.show(svc, "Finding \"" + contactHint + "\" on WhatsApp", () -> cancelRequested = true);
@@ -52,10 +52,9 @@ public class WhatsAppAutomation {
                         click(resultNode);
                         cb.onStatus("Opened chat with a match for \"" + contactHint + "\".");
                         if (imageUri != null) {
-                            MAIN.postDelayed(() -> {
-                                if (cancelled(cb)) return;
-                                attachImageViaShare(svc, imageUri, contactHint, cb);
-                            }, 700);
+                            MAIN.postDelayed(() -> { if (!cancelled(cb)) attachImageViaShare(svc, imageUri, contactHint, cb); }, 700);
+                        } else if (message != null && !message.trim().isEmpty()) {
+                            MAIN.postDelayed(() -> { if (!cancelled(cb)) typeMessageIntoChat(svc, message, cb); }, 700);
                         } else {
                             TaskCancelBar.hide();
                             cb.onStatus("Chat is open. Type your message and send it yourself, or ask me to type something.");
@@ -64,6 +63,17 @@ public class WhatsAppAutomation {
                 }, () -> { TaskCancelBar.hide(); cb.onStatus("Couldn't find WhatsApp's search field -- its UI may have changed."); });
             },
             () -> { TaskCancelBar.hide(); cb.onStatus("Couldn't find WhatsApp's search button -- its UI may have changed."); });
+    }
+
+    /** Once inside a chat, finds its message-compose field and types the given text into it.
+     *  Deliberately does not tap Send -- the user does that themselves. */
+    private static void typeMessageIntoChat(AccessibilityService svc, String message, Callback cb) {
+        waitFor(svc, TIMEOUT_MS, root -> findEditable(root), editField -> {
+            if (cancelled(cb)) return;
+            setText(editField, message);
+            TaskCancelBar.hide();
+            cb.onStatus("Typed the message into the chat -- review it and tap Send yourself when ready.");
+        }, () -> { TaskCancelBar.hide(); cb.onStatus("Opened the chat but couldn't find the message box to type into -- you can type it yourself."); });
     }
 
     /** Checks the cancel flag; if set, reports it, hides the bar, and returns true so the

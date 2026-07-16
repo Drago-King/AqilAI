@@ -167,7 +167,6 @@ public class AqilOverlayService extends Service {
     }
 
     private void runSmart(String text) {
-        AqilAccessibilityService.runCommand(text);
         AgentBrain.ask(this, text, answer -> { if (keyboard != null) keyboard.post(() -> keyboard.setText(answer)); });
     }
 

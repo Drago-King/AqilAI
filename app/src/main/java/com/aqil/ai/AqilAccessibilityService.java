@@ -35,7 +35,7 @@ public static boolean runCommand(String text) {
     if (cmd.contains("brightness")) return instance.openIntent(new Intent(Settings.ACTION_DISPLAY_SETTINGS));  
     if (cmd.contains("volume") || cmd.contains("sound")) return instance.openIntent(new Intent(Settings.ACTION_SOUND_SETTINGS));  
     if (cmd.contains("telegram")) return instance.openPackageOrSearch("org.telegram.messenger", "Telegram");  
-    if (cmd.contains("whatsapp")) { instance.startWhatsAppFlow(cmd, null); return true; }  
+    if (cmd.contains("whatsapp")) { instance.startWhatsAppFlow(cmd, null, null); return true; }  
     if (cmd.contains("chrome")) return instance.openPackageOrSearch("com.android.chrome", "Chrome");  
     if (cmd.contains("youtube")) return instance.openUri("https://www.youtube.com/results?search_query=" + Uri.encode(clean(cmd, "open", "play", "youtube")));  
     if (cmd.contains("song") || cmd.contains("music")) return instance.openUri("https://www.youtube.com/results?search_query=" + Uri.encode(clean(cmd, "play", "song", "music")));  
@@ -46,14 +46,14 @@ public static boolean runCommand(String text) {
     return instance.openUri("https://www.google.com/search?q=" + Uri.encode(cmd));  
 }  
 
-public void startWhatsAppFlow(String rawText, Uri imageUri) {
+public void startWhatsAppFlow(String rawText, Uri imageUri, String message) {
     String contact = extractContactName(rawText);
-    WhatsAppAutomation.openChatAndPrepare(this, contact, imageUri, status -> AgentBrain.addHistory(this, "AQIL: " + status));
+    WhatsAppAutomation.openChatAndPrepare(this, contact, imageUri, message, status -> AgentBrain.addHistory(this, "AQIL: " + status));
 }
 
-public static boolean startWhatsApp(String contactHint, Uri imageUri) {
+public static boolean startWhatsApp(String contactHint, Uri imageUri, String message) {
     if (instance == null) return false;
-    instance.startWhatsAppFlow(contactHint, imageUri);
+    instance.startWhatsAppFlow(contactHint, imageUri, message);
     return true;
 }
 
