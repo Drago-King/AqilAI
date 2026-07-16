@@ -11,61 +11,73 @@ import android.os.Looper;
 import android.view.accessibility.AccessibilityNodeInfo;
 import org.json.JSONObject;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
- * General-purpose "look at the screen and figure out what to tap" loop.
+ * General-purpose "look at the screen and figure out what to tap" loop -- built to actually
+ * DIAGNOSE failures rather than just retrying blindly and hoping a weak model notices on its own:
  *
- * Two things make this reliable rather than just "smart-looking":
- *  1) Real coordinate-based gesture taps (dispatchGesture) as the PRIMARY tap
- *     mechanism, not the polite AccessibilityNodeInfo.ACTION_CLICK. Many modern
- *     apps (Jetpack Compose UIs especially -- YouTube, Instagram, etc.) don't
- *     reliably respond to ACTION_CLICK even though the node reports clickable=true.
- *     A synthetic touch at the node's actual on-screen coordinates is indistinguishable
- *     from a real finger tap and works far more consistently.
- *  2) Change-aware waiting: instead of a fixed delay after every action, it polls
- *     for the screen to actually change (new package, or a different set of visible
- *     labels) and moves on as soon as it does, up to a cap -- so it's both faster
- *     when things are quick and more patient when a screen is genuinely slow to load.
+ *  - Every action is tracked by a stable key (its label), not just a step number. If the exact
+ *    same action fails to change anything twice, it's hard-blocked from being tried a third time --
+ *    deterministically, in code, regardless of whether the AI "notices."
+ *  - Failed actions are marked "[AVOID -- already failed]" directly in the next screen listing,
+ *    so the warning is impossible to miss (not buried in a wall of history text).
+ *  - Leaving the target app entirely (e.g. an accidental back landing on the home screen) is
+ *    detected and called out explicitly, instead of silently continuing on the wrong app.
+ *  - Status messages describe what actually happened and what's being checked next, not a bare
+ *    "Thinking about step N" with no content.
+ *  - Real coordinate-based gesture taps (dispatchGesture) PLUS a redundant ACTION_CLICK, since
+ *    different widget types respond to different mechanisms and there's no cost to trying both.
  */
 public class ScreenAgent {
     public interface Callback { void onStatus(String status); void onDone(); }
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final int MAX_STEPS = 18;
+    private static final int MAX_FAILS_PER_ACTION = 2; // 3rd identical failure is hard-blocked
     private static final long MIN_SETTLE_MS = 450;
     private static final long MAX_SETTLE_MS = 3000;
     private static final long CHANGE_POLL_MS = 200;
     private static volatile boolean cancelRequested = false;
+    private static volatile boolean isRunning = false;
+    private static Map<String, Integer> failCounts = new HashMap<>();
+    private static String startPackage = null;
 
     private static final String AGENT_SYSTEM =
         "You control an Android phone one step at a time by choosing a numbered element from the " +
         "current screen. You will be given: the app currently open, a numbered list of tappable/typeable " +
-        "elements with short labels and rough screen position, the user's goal, and a short history of what " +
-        "you've already done and whether the screen changed afterward. " +
+        "elements (some marked [AVOID -- already failed], never choose those), the user's goal, and a " +
+        "diagnostic log of what happened after each of your previous actions. " +
         "Reply with ONLY JSON, no other text, no markdown fences: " +
         "{\"action\":\"tap\"|\"type\"|\"scroll_down\"|\"scroll_up\"|\"back\"|\"done\"|\"give_up\"," +
-        "\"index\":<number, only for tap/type>,\"text\":\"<only for type>\",\"reason\":\"<one short phrase>\"}. " +
-        "Use \"done\" only once the CURRENT screen clearly shows the goal achieved (e.g. the right video is " +
-        "actually playing, not just that you tapped something that looked promising) -- check the screen " +
-        "elements before declaring done. If the current screen doesn't match what the goal implies (wrong " +
-        "item opened, ended up somewhere unexpected), do not give up immediately: use \"back\" and try a " +
-        "different element first. Only use \"give_up\" after that kind of correction has also failed, or the " +
-        "same state repeats with no progress after 3+ tries. If the history shows the screen DID NOT change " +
-        "after your last action, do not repeat the exact same tap -- try a nearby element or scroll instead. " +
-        "Never invent an index that wasn't in the list. Prefer the fewest steps.";
+        "\"index\":<number, only for tap/type>,\"text\":\"<only for type>\",\"reason\":\"<one short phrase " +
+        "explaining your diagnosis, e.g. 'previous tap had no effect, trying the item below it instead'>\"}. " +
+        "Use \"done\" only once the CURRENT screen elements clearly show the goal achieved -- not just that " +
+        "you tapped something that seemed promising. If the log shows your last action had no effect, do " +
+        "not repeat it -- diagnose why (wrong element? needs scrolling into view? screen still loading?) and " +
+        "act on that diagnosis. If you ended up somewhere unexpected, use \"back\" and pick a different path " +
+        "before giving up. Only use \"give_up\" if multiple different approaches have all failed. Never " +
+        "invent an index that wasn't in the list, and never choose one marked [AVOID].";
 
     public static void runTask(AccessibilityService svc, Context context, String goal, Callback cb) {
         if (svc == null) { cb.onStatus("Accessibility service not connected."); cb.onDone(); return; }
+        if (isRunning) { cb.onStatus("Already working on something -- cancel it first (tap the red bar) before starting another task."); cb.onDone(); return; }
+        isRunning = true;
         cancelRequested = false;
-        List<String> history = new ArrayList<>();
+        failCounts = new HashMap<>();
+        AccessibilityNodeInfo root0 = svc.getRootInActiveWindow();
+        startPackage = root0 != null && root0.getPackageName() != null ? root0.getPackageName().toString() : null;
+        List<String> log = new ArrayList<>();
         TaskCancelBar.show(svc, "Working on: " + shorten(goal, 28), () -> cancelRequested = true);
-        step(svc, context, goal, history, 0, signatureOf(svc), cb);
+        step(svc, context, goal, log, 0, signatureOf(svc), cb);
     }
 
-    private static void step(AccessibilityService svc, Context context, String goal, List<String> history, int stepNum, String prevSignature, Callback cb) {
+    private static void step(AccessibilityService svc, Context context, String goal, List<String> log, int stepNum, String prevSignature, Callback cb) {
         if (cancelRequested) { finish(cb, "Cancelled."); return; }
-        if (stepNum >= MAX_STEPS) { finish(cb, "Stopped after " + MAX_STEPS + " steps without finishing -- try a smaller/simpler instruction."); return; }
+        if (stepNum >= MAX_STEPS) { finish(cb, "Stopped after " + MAX_STEPS + " steps without finishing -- try breaking the goal into a smaller instruction."); return; }
 
         AccessibilityNodeInfo root = svc.getRootInActiveWindow();
         if (root == null) { finish(cb, "Couldn't read the screen right now."); return; }
@@ -74,15 +86,24 @@ public class ScreenAgent {
         collectInteractable(root, elements, 90);
         if (elements.isEmpty()) { finish(cb, "No interactable elements found on this screen."); return; }
 
-        StringBuilder listing = new StringBuilder();
-        for (int i = 0; i < elements.size(); i++) listing.append('[').append(i).append("] ").append(describe(svc, elements.get(i))).append('\n');
-
         String appPkg = root.getPackageName() != null ? root.getPackageName().toString() : "unknown";
-        String historyText = history.isEmpty() ? "(none yet)" : String.join("\n", history);
-        String prompt = "Current app: " + appPkg + "\nGoal: " + goal + "\nSteps so far:\n" + historyText +
+        boolean leftTargetApp = startPackage != null && !startPackage.equals(appPkg) && isLauncher(appPkg);
+
+        StringBuilder listing = new StringBuilder();
+        for (int i = 0; i < elements.size(); i++) {
+            String label = describe(svc, elements.get(i));
+            int fails = failCounts.getOrDefault(label, 0);
+            listing.append('[').append(i).append("] ").append(label);
+            if (fails >= MAX_FAILS_PER_ACTION) listing.append("  [AVOID -- already failed ").append(fails).append(" times]");
+            listing.append('\n');
+        }
+
+        String logText = log.isEmpty() ? "(none yet)" : String.join("\n", log);
+        String prompt = "Current app: " + appPkg + (leftTargetApp ? " (** you appear to have left the original app -- this may be a wrong turn **)" : "") +
+                "\nGoal: " + goal + "\nDiagnostic log so far:\n" + logText +
                 "\nCurrent screen elements:\n" + listing;
 
-        cb.onStatus("Thinking about step " + (stepNum + 1) + "...");
+        cb.onStatus("Step " + (stepNum + 1) + ": reading the screen and deciding what to do next...");
         AgentBrain.decide(context, AGENT_SYSTEM, prompt, raw -> MAIN.post(() -> {
             if (cancelRequested) { finish(cb, "Cancelled."); return; }
             JSONObject decision = extractJson(raw);
@@ -100,11 +121,11 @@ public class ScreenAgent {
                 case "scroll_down":
                 case "scroll_up":
                     dispatchScroll(action.equals("scroll_down"));
-                    afterAction(svc, context, goal, history, stepNum, prevSignature, action, reason, cb);
+                    afterAction(svc, context, goal, log, stepNum, prevSignature, action, reason, cb);
                     return;
                 case "back":
                     svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK);
-                    afterAction(svc, context, goal, history, stepNum, prevSignature, "back", reason, cb);
+                    afterAction(svc, context, goal, log, stepNum, prevSignature, "back", reason, cb);
                     return;
                 case "tap":
                 case "type": {
@@ -112,15 +133,24 @@ public class ScreenAgent {
                     if (idx < 0 || idx >= elements.size()) { finish(cb, "The AI pointed at an element that doesn't exist -- stopping for safety."); return; }
                     AccessibilityNodeInfo target = elements.get(idx);
                     String label = describe(svc, target);
+                    int fails = failCounts.getOrDefault(label, 0);
+                    if (fails >= MAX_FAILS_PER_ACTION) {
+                        finish(cb, "Stopped -- tried " + label + " " + fails + " times with no effect. This element likely isn't the right target; the task needs a different instruction.");
+                        return;
+                    }
                     if ("type".equals(action)) {
                         String text = decision.optString("text", "");
+                        if (looksLikeParrotedMeta(text)) {
+                            finish(cb, "The AI tried to type its own internal status text instead of real content -- stopping rather than typing garbage. Try again, or use a stronger model in AI Providers.");
+                            return;
+                        }
                         setText(svc, target, text);
-                        cb.onStatus("Typing into " + label + "...");
-                        afterAction(svc, context, goal, history, stepNum, prevSignature, "typed \"" + shorten(text, 24) + "\" into [" + idx + "] " + label, reason, cb);
+                        cb.onStatus("Typing \"" + shorten(text, 30) + "\" into " + label + "...");
+                        afterAction(svc, context, goal, log, stepNum, prevSignature, "type:" + label, reason, cb);
                     } else {
                         click(svc, target);
                         cb.onStatus("Tapping " + label + "...");
-                        afterAction(svc, context, goal, history, stepNum, prevSignature, "tapped [" + idx + "] " + label, reason, cb);
+                        afterAction(svc, context, goal, log, stepNum, prevSignature, "tap:" + label, reason, cb);
                     }
                     return;
                 }
@@ -130,9 +160,10 @@ public class ScreenAgent {
         }));
     }
 
-    /** After performing an action, wait for the screen to actually change (rather than a fixed
-     *  guess-delay), record whether it did, and move to the next step. */
-    private static void afterAction(AccessibilityService svc, Context context, String goal, List<String> history, int stepNum, String prevSignature, String actionDesc, String reason, Callback cb) {
+    /** After performing an action, waits for the screen to actually change, records a clear
+     *  diagnostic log line (not a bare "step N"), tracks per-action failure counts for the
+     *  hard-block mechanism, and moves to the next step. */
+    private static void afterAction(AccessibilityService svc, Context context, String goal, List<String> log, int stepNum, String prevSignature, String actionKey, String reason, Callback cb) {
         long start = System.currentTimeMillis();
         Runnable[] poll = new Runnable[1];
         poll[0] = () -> {
@@ -140,12 +171,18 @@ public class ScreenAgent {
             String nowSignature = signatureOf(svc);
             boolean changed = !nowSignature.equals(prevSignature);
             if ((changed && elapsed >= MIN_SETTLE_MS) || elapsed >= MAX_SETTLE_MS) {
-                String entry = (stepNum + 1) + ". " + actionDesc + (reason.isEmpty() ? "" : " (" + reason + ")") +
-                        " -- screen " + (changed ? "changed" : "did not change");
-                List<String> nextHistory = new ArrayList<>(history);
-                nextHistory.add(entry);
-                if (nextHistory.size() > 8) nextHistory.remove(0); // keep the prompt from growing unbounded
-                step(svc, context, goal, nextHistory, stepNum + 1, nowSignature, cb);
+                if (actionKey.startsWith("tap:") || actionKey.startsWith("type:")) {
+                    String label = actionKey.substring(actionKey.indexOf(':') + 1);
+                    if (!changed) failCounts.merge(label, 1, Integer::sum);
+                    else failCounts.remove(label); // it worked; forget any earlier near-miss on this label
+                }
+                String diagnosis = changed ? "screen updated as expected" : "no visible change -- this action likely did nothing";
+                String entry = (stepNum + 1) + ". " + actionKey + (reason.isEmpty() ? "" : " (reasoning: " + reason + ")") + " -> " + diagnosis;
+                List<String> nextLog = new ArrayList<>(log);
+                nextLog.add(entry);
+                if (nextLog.size() > 8) nextLog.remove(0); // keep the prompt bounded
+                cb.onStatus(changed ? "That worked -- screen changed, moving to the next step." : "That tap/action had no visible effect -- re-checking the screen to try a different approach.");
+                step(svc, context, goal, nextLog, stepNum + 1, nowSignature, cb);
             } else {
                 MAIN.postDelayed(poll[0], CHANGE_POLL_MS);
             }
@@ -166,7 +203,16 @@ public class ScreenAgent {
         return sb.toString();
     }
 
+    private static boolean isLauncher(String pkg) {
+        if (pkg == null) return false;
+        String p = pkg.toLowerCase(Locale.US);
+        return p.contains("launcher") || p.contains("home") || p.equals("com.sec.android.app.launcher") || p.equals("com.android.systemui");
+    }
+
     private static void finish(Callback cb, String message) {
+        isRunning = false;
+        failCounts = new HashMap<>();
+        startPackage = null;
         TaskCancelBar.hide();
         cb.onStatus(message);
         cb.onDone();
@@ -245,6 +291,17 @@ public class ScreenAgent {
         return vert + "-" + horiz;
     }
 
+    /** Catches a specific weak-model failure mode seen in practice: instead of real content,
+     *  the model types back a fragment of its own status/reasoning that it saw echoed in the
+     *  prompt's diagnostic log, instead of actual message/search content. */
+    private static boolean looksLikeParrotedMeta(String text) {
+        if (text == null || text.trim().isEmpty()) return false;
+        String lower = text.toLowerCase(Locale.US);
+        for (String tell : new String[]{"thinking about step", "screen updated", "no visible change", "tapping ", "typing \"", "reasoning:"})
+            if (lower.contains(tell)) return true;
+        return false;
+    }
+
     private static String shorten(String s, int max) {
         if (s == null) return "";
         return s.length() > max ? s.substring(0, max) + "..." : s;
@@ -254,17 +311,14 @@ public class ScreenAgent {
         AqilAccessibilityService.runCommand(down ? "scroll down" : "scroll up");
     }
 
-    /** Real coordinate-based tap -- the primary mechanism, since many modern (especially
-     *  Compose-based) UIs don't reliably respond to the polite ACTION_CLICK even when the
-     *  node reports clickable=true. Falls back to ACTION_CLICK only if bounds look invalid. */
+    /** Real coordinate-based tap AND a redundant ACTION_CLICK -- different widget types respond
+     *  to different mechanisms (Compose UIs often need the real gesture; plain Views usually
+     *  respond to either), and there's no real cost to firing both. */
     private static void click(AccessibilityService svc, AccessibilityNodeInfo node) {
         Rect r = new Rect();
         node.getBoundsInScreen(r);
-        if (!r.isEmpty() && r.width() > 0 && r.height() > 0) {
-            tapAt(svc, r.centerX(), r.centerY());
-        } else {
-            node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-        }
+        if (!r.isEmpty() && r.width() > 0 && r.height() > 0) tapAt(svc, r.centerX(), r.centerY());
+        node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
     }
 
     private static void tapAt(AccessibilityService svc, int x, int y) {
