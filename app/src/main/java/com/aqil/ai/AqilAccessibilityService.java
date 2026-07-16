@@ -2,6 +2,7 @@ package com.aqil.ai;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Path;
 import android.net.Uri;
@@ -10,6 +11,7 @@ import android.provider.MediaStore;
 import android.provider.Settings;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import java.util.Locale;
 
 public class AqilAccessibilityService extends AccessibilityService {
 static AqilAccessibilityService instance;
@@ -33,7 +35,7 @@ public static boolean runCommand(String text) {
     if (cmd.contains("brightness")) return instance.openIntent(new Intent(Settings.ACTION_DISPLAY_SETTINGS));  
     if (cmd.contains("volume") || cmd.contains("sound")) return instance.openIntent(new Intent(Settings.ACTION_SOUND_SETTINGS));  
     if (cmd.contains("telegram")) return instance.openPackageOrSearch("org.telegram.messenger", "Telegram");  
-    if (cmd.contains("whatsapp")) return instance.openPackageOrSearch("com.whatsapp", "WhatsApp");  
+    if (cmd.contains("whatsapp")) { instance.startWhatsAppFlow(cmd, null); return true; }  
     if (cmd.contains("chrome")) return instance.openPackageOrSearch("com.android.chrome", "Chrome");  
     if (cmd.contains("youtube")) return instance.openUri("https://www.youtube.com/results?search_query=" + Uri.encode(clean(cmd, "open", "play", "youtube")));  
     if (cmd.contains("song") || cmd.contains("music")) return instance.openUri("https://www.youtube.com/results?search_query=" + Uri.encode(clean(cmd, "play", "song", "music")));  
@@ -43,6 +45,53 @@ public static boolean runCommand(String text) {
     if (cmd.startsWith("open ")) return instance.openUri("https://www.google.com/search?q=" + Uri.encode(cmd));  
     return instance.openUri("https://www.google.com/search?q=" + Uri.encode(cmd));  
 }  
+
+public void startWhatsAppFlow(String rawText, Uri imageUri) {
+    String contact = extractContactName(rawText);
+    WhatsAppAutomation.openChatAndPrepare(this, contact, imageUri, status -> AgentBrain.addHistory(this, "AQIL: " + status));
+}
+
+public static boolean startWhatsApp(String contactHint, Uri imageUri) {
+    if (instance == null) return false;
+    instance.startWhatsAppFlow(contactHint, imageUri);
+    return true;
+}
+
+/** Hands a plain-language goal to the general screen-reading agent loop.
+ *  Every step's status is both logged to History and streamed back live via statusCb,
+ *  so the caller sees progress rather than just a single final result. */
+public static boolean startScreenAgent(Context context, String goal, ToolRegistry.Callback statusCb) {
+    if (instance == null) return false;
+    ScreenAgent.runTask(instance, context, goal, new ScreenAgent.Callback() {
+        @Override public void onStatus(String status) {
+            AgentBrain.addHistory(context, "AQIL: " + status);
+            statusCb.onResult(status);
+        }
+        @Override public void onDone() { /* last onStatus already carried the final message */ }
+    });
+    return true;
+}
+
+/** Pulls a likely contact name out of free text like "send to my mom in whatsapp"
+ *  or "call mom on whatsapp". Best-effort -- falls back to "whatsapp" itself if nothing found,
+ *  which will simply fail to match any contact and report back cleanly. */
+private static String extractContactName(String text) {
+    String t = text.toLowerCase(Locale.US);
+    String[] stopWords = {"whatsapp", "on", "in", "to", "my", "call", "message", "send", "text", "the"};
+    String[] markers = {" to ", " call "};
+    String after = null;
+    for (String m : markers) { int idx = t.indexOf(m); if (idx >= 0) { after = t.substring(idx + m.length()); break; } }
+    if (after == null) after = t;
+    for (String stop : new String[]{" on whatsapp", " in whatsapp", " whatsapp"}) after = after.replace(stop, "");
+    StringBuilder sb = new StringBuilder();
+    for (String word : after.trim().split("\\s+")) {
+        boolean skip = false;
+        for (String sw : stopWords) if (word.equals(sw)) { skip = true; break; }
+        if (!skip && !word.isEmpty()) { if (sb.length() > 0) sb.append(' '); sb.append(word); }
+    }
+    String result = sb.toString().trim();
+    return result.isEmpty() ? "whatsapp" : result;
+}
 
 private static String clean(String cmd, String... words) { for (String w: words) cmd = cmd.replace(w, " "); return cmd.trim(); }  
 private boolean openUri(String uri) { return openIntent(new Intent(Intent.ACTION_VIEW, Uri.parse(uri))); }  

@@ -15,7 +15,7 @@ public class AgentBrain {
 public interface Callback { void onAnswer(String answer); }
 public static final String PREFS = "aqil_agent";
 public static final String[] PROVIDERS = {"OpenAI Compatible", "OpenRouter", "Groq", "Google Gemini", "Local (Ollama)"};
-private static final String SYSTEM = "You are AQIL, a safe Android tool-calling assistant. Reason first. If a phone tool is needed, return ONLY JSON: {\"tool\":\"tool_name\",\"input\":\"short command/query\",\"confirm\":true/false}. Use confirm=true before sending messages, purchases, orders, or sharing files. If no tool is needed, answer normally. Available tools are provided in the user message.";
+private static final String SYSTEM = "You are AQIL, a safe Android tool-calling assistant. Reason first. If a phone tool is needed, return ONLY JSON: {\"tool\":\"tool_name\",\"input\":\"short command/query\",\"confirm\":true/false,\"image_uri\":\"optional, only for whatsapp_prepare after a gallery_search result\"}. To send a found photo on WhatsApp: first call gallery_search, read the URI out of its result, then call whatsapp_prepare with input=the contact's name and image_uri=that URI. For anything else that requires navigating an app's UI and isn't covered by a specific tool -- opening any app and tapping through menus, filling a form, liking a post, changing a setting -- use screen_agent with input=the goal in plain language; it reads the actual screen itself and iterates. Use confirm=true before sending messages, purchases, orders, or sharing files -- whatsapp_prepare and screen_agent never auto-send anything irreversible without it being an explicit part of the stated goal. If no tool is needed, answer normally. Available tools are provided in the user message.";
 
 public static SharedPreferences prefs(Context c) { return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE); }  
 public static void saveProvider(Context c, String provider, String baseUrl, String model, String key) {  
@@ -40,7 +40,7 @@ public static void ask(Context context, String prompt, Callback callback) {
         String answer;  
         if (base.isEmpty() || model.isEmpty()) answer = "Provider is not configured. Open AI Providers and set Base URL + Model.";  
         else {  
-            try { answer = callOpenAiCompatible(key, base, model, prompt); }  
+            try { answer = callOpenAiCompatible(key, base, model, SYSTEM, "Tools: " + ToolRegistry.schema().toString() + "\nUser request: " + prompt); }  
             catch (Exception e) { answer = tryFallback(context, key, base, model, prompt, e); }  
         }  
         String finalAnswer = answer;  
@@ -48,7 +48,7 @@ public static void ask(Context context, String prompt, Callback callback) {
             JSONObject maybeTool = extractJson(answer);  
             if (maybeTool != null && maybeTool.has("tool")) {  
                 if (maybeTool.optBoolean("confirm", false)) finalAnswer = "I found the required action, but need your confirmation before I continue: " + maybeTool.toString();  
-                else { ToolRegistry.execute(context, maybeTool.optString("tool"), maybeTool.optString("input", prompt), result -> callback.onAnswer("Tool result: " + result)); return; }  
+                else { ToolRegistry.execute(context, maybeTool.optString("tool"), maybeTool.optString("input", prompt), maybeTool.optString("image_uri", null), result -> callback.onAnswer("Tool result: " + result)); return; }  
             }  
         } catch (Exception ignored) { }  
         addHistory(context, "AQIL: " + finalAnswer);  
@@ -74,7 +74,7 @@ public static String local(String prompt) {
     return "Basic command mode ready. Configure an OpenAI-compatible provider for deeper reasoning.";  
 }  
 
-private static String callOpenAiCompatible(String key, String baseUrl, String model, String prompt) throws Exception {  
+private static String callOpenAiCompatible(String key, String baseUrl, String model, String system, String prompt) throws Exception {  
     URL url = new URL(trimSlash(baseUrl) + "/chat/completions");  
     HttpURLConnection conn = (HttpURLConnection) url.openConnection();  
     conn.setRequestMethod("POST");  
@@ -85,8 +85,8 @@ private static String callOpenAiCompatible(String key, String baseUrl, String mo
     conn.setDoOutput(true);  
     JSONObject body = new JSONObject(); body.put("model", model);  
     JSONArray messages = new JSONArray();  
-    messages.put(new JSONObject().put("role", "system").put("content", SYSTEM));  
-    messages.put(new JSONObject().put("role", "user").put("content", "Tools: " + ToolRegistry.schema().toString() + "\nUser request: " + prompt));  
+    messages.put(new JSONObject().put("role", "system").put("content", system));  
+    messages.put(new JSONObject().put("role", "user").put("content", prompt));  
     body.put("messages", messages); body.put("stream", false);  
     try (OutputStream os = conn.getOutputStream()) { os.write(body.toString().getBytes(StandardCharsets.UTF_8)); }  
     BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getResponseCode() >= 400 ? conn.getErrorStream() : conn.getInputStream()));  
@@ -95,9 +95,25 @@ private static String callOpenAiCompatible(String key, String baseUrl, String mo
     JSONObject json = new JSONObject(response.toString());  
     return json.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content");  
 }  
+
+/** Entry point for the screen agent's per-step decisions -- same provider/key/model the user
+ *  already configured, but with a caller-supplied system prompt instead of the tool-calling one. */
+public static void decide(Context context, String systemPrompt, String userPrompt, Callback callback) {
+    new Thread(() -> {
+        String key = get(context, "api_key", "");
+        String base = get(context, "base_url", "https://openrouter.ai/api/v1");
+        String model = get(context, "model", "tencent/hy3:free");
+        try {
+            String answer = callOpenAiCompatible(key, base, model, systemPrompt, userPrompt);
+            callback.onAnswer(answer);
+        } catch (Exception e) {
+            callback.onAnswer("ERROR: " + e.getMessage());
+        }
+    }).start();
+}
 private static String tryFallback(Context context, String key, String base, String model, String prompt, Exception original) {  
     String fb = get(context, "fallback_base_url", ""); String fm = get(context, "fallback_model", ""); String fk = get(context, "fallback_api_key", key);  
-    if (!fb.isEmpty() && !fm.isEmpty() && !fb.equals(base)) { try { return callOpenAiCompatible(fk, fb, fm, prompt); } catch (Exception ignored) { } }  
+    if (!fb.isEmpty() && !fm.isEmpty() && !fb.equals(base)) { try { return callOpenAiCompatible(fk, fb, fm, SYSTEM, "Tools: " + ToolRegistry.schema().toString() + "\nUser request: " + prompt); } catch (Exception ignored) { } }  
     return local(prompt) + "\nProvider error: " + original.getMessage();  
 }  
 private static JSONObject extractJson(String text) {  

@@ -19,12 +19,13 @@ import java.util.ArrayList;
 
 public class MainActivity extends Activity {
 private LinearLayout nav, content; private TextView status; private EditText chatInput; private SpeechRecognizer recognizer;
-private final String[] pages = {"Home", "Chat", "AI Agent", "Floating Assistant", "History", "Settings", "AI Providers", "Voice", "Appearance", "Permissions", "Accessibility", "Automation", "Advanced", "About"};
+private final String[] pages = {"Home", "Chat", "Floating Assistant", "Voice", "AI Providers", "Permissions", "History", "About"};
 
 @Override public void onCreate(Bundle b) { super.onCreate(b); requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_MEDIA_IMAGES}, 10); shell(); show("Home"); }  
 @Override protected void onResume() { super.onResume(); if (Settings.canDrawOverlays(this)) startService(new Intent(this, AqilOverlayService.class)); }  
 
 private void shell() {  
+    if (nav != null) return; // shell already built once; must not rebuild/duplicate the nav on resume  
     LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.HORIZONTAL); root.setBackgroundResource(R.drawable.app_background);  
     nav = new LinearLayout(this); nav.setOrientation(LinearLayout.VERTICAL); nav.setPadding(dp(10), dp(24), dp(10), dp(12)); nav.setBackgroundColor(0x66000612);  
     root.addView(nav, new LinearLayout.LayoutParams(dp(118), ViewGroup.LayoutParams.MATCH_PARENT));  
